@@ -50,18 +50,31 @@ float* cpu_multiply(const float* matrix_1, unsigned int numRows_1, unsigned int 
 
 __global__ void gpu_multiply(float* matrix_1_d, float* matrix_2_d, float* matrix_ans_d, 
                              int numRows_1, int numCols_1, int numRows_2, int numCols_2) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (row < numRows_1 && col < numCols_2) {  // boundary condition
-        float sum = 0;
-        for(int k = 0; k < numCols_1; k++) {
-            float matrix_1_el = matrix_1_d[row * numCols_1 + k];
-            float matrix_2_el = matrix_2_d[k * numCols_2 + col];
-            sum += matrix_1_el * matrix_2_el;
+    const int TILE_WIDTH = 32;  // Must assume tile width is same as block size
+    __shared__ float A[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float B[TILE_WIDTH][TILE_WIDTH];
+
+    float partial_sum = 0;
+    int n_tiles = (numCols_1 + TILE_WIDTH - 1) / TILE_WIDTH;
+    for(unsigned int tile_num = 0; tile_num < n_tiles; tile_num++) {
+        int col = blockIdx.x * blockDim.x + threadIdx.x;
+        int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+        // load tile to shared memory
+        A[threadIdx.y][threadIdx.x] = matrix_1_d[row*numCols_1 + tile_num * TILE_WIDTH + threadIdx.x];
+        B[threadIdx.y][threadIdx.x] = matrix_2_d[(tile_num * TILE_WIDTH + threadIdx.y) * numCols_2 + col];
+        __syncthreads();
+
+        for(int i = 0; i < TILE_WIDTH; i++) {
+            partial_sum += A[threadIdx.y][i] * B[i][threadIdx.x];
         }
-        matrix_ans_d[row * numCols_2 + col] = sum;
+        matrix_ans_d[row * numCols_2 + col] = partial_sum;
+        __syncthreads();
+
     }
+
+
 }
 
 int main() {
@@ -111,7 +124,7 @@ int main() {
     cudaMemcpy(gpu_matrix_ans, matrix_ans_d, numRows_1 * numCols_2 * sizeof(float), cudaMemcpyDeviceToHost);
     clock_t t3 = clock();
     float gpu_time = ((double)(t3 - t2)) / CLOCKS_PER_SEC;
-    printf("GPU multiply took %fs\n", gpu_time);
+    printf("GPU multiply tiled took %fs\n", gpu_time);
 
     // free memory on device
     cudaFree(matrix_1_d);
@@ -119,7 +132,7 @@ int main() {
     cudaFree(matrix_ans_d);
     clock_t t_gpu_overall_en = clock();
     float gpu_overall_time = ((double)(t_gpu_overall_en - t_gpu_overall_st)) / CLOCKS_PER_SEC;
-    printf("Overall GPU multiply took %fs\n", gpu_overall_time);
+    printf("Overall GPU multiply tiled took %fs\n", gpu_overall_time);
 
     // Check correctness
     float eps = 1e-2;
