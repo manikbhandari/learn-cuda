@@ -15,8 +15,7 @@ const float* getRandomMatrix(unsigned int numRows, unsigned int numCols) {
     unsigned int numElements = numRows * numCols;
     float* matrix = new float[numRows * numCols];
     for(unsigned int i = 0; i < numElements; i++) {
-        // matrix[i] = rand() / (float)RAND_MAX;
-        matrix[i] = 3.0;
+        matrix[i] = rand() / (float)RAND_MAX;
     }
     return (const float*)matrix;
 }
@@ -71,19 +70,23 @@ __global__ void gpu_convolution_tiled(const float* matrix_1_d, unsigned int numR
     int radius_h = numRows_2 / 2;  // same as mask_dim / 2
     int radius_w = numCols_2 / 2;
 
-    int i_1 = blockIdx.y * blockDim.y + threadIdx.y - radius_h;  
-    int j_1 = blockIdx.x * blockDim.x + threadIdx.x - radius_w;
+    int i_1 = blockIdx.y * blockDim.y + threadIdx.y;  
+    int j_1 = blockIdx.x * blockDim.x + threadIdx.x;
 
     // load shared memory. Ghost elements load 0
     __shared__ float A[BLOCK_SZ][BLOCK_SZ];
     float el = 0;
-    if(i_1 >= 0 && i_1 < numRows_1 && j_1 >= 0 && j_1 < numCols_1) {
-        el = matrix_1_d[i_1 * numCols_1 + j_1];
+    int i_el = i_1 - blockIdx.y * radius_h * 2 - radius_h;
+    int j_el = j_1 - blockIdx.x * radius_w * 2 - radius_w;
+    if(i_el >= 0 && i_el < numRows_1 && j_el >= 0 && j_el < numCols_1) {
+        el = matrix_1_d[i_el * numCols_1 + j_el];
     }
     A[threadIdx.y][threadIdx.x] = el;
     __syncthreads();
 
-    if(i_1 >= 0 && i_1 < numRows_1 && j_1 >= 0 && j_1 < numCols_1) {
+    if(i_el >= 0 && i_el < numRows_1 && j_el >= 0 && j_el < numCols_1
+       && threadIdx.y >= radius_h && threadIdx.y + radius_h < BLOCK_SZ
+       && threadIdx.x >= radius_w && threadIdx.x + radius_w < BLOCK_SZ) {
         float sum = 0.0;
         for(int i_2 = threadIdx.y - radius_h; i_2 <= threadIdx.y + radius_h; i_2++){
             for(int j_2 = threadIdx.x - radius_w; j_2 <= threadIdx.x + radius_w; j_2++) {
@@ -92,8 +95,9 @@ __global__ void gpu_convolution_tiled(const float* matrix_1_d, unsigned int numR
                 sum += mat1_el * mat2_el;
             }
         }
-        matrix_ans_d[i_1 * numCols_1 + j_1] = sum;
+        matrix_ans_d[i_el * numCols_1 + j_el] = sum;
     }
+    __syncthreads();
 }
 
 int main() {
