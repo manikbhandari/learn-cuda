@@ -1,3 +1,7 @@
+/*
+    Run the following command to get debug info:
+    nvcc -g -G convolution_tiled.cu -o bin/convolution_tiled
+*/
 #include <iostream>
 #include <stdio.h>
 #include <time.h>
