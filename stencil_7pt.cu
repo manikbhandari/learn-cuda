@@ -7,6 +7,8 @@
 #include <time.h>
 
 #define BLOCK_SZ 32
+#define IN_TILE_DIM BLOCK_SZ
+#define OUT_TILE_DIM (IN_TILE_DIM - 2)
 #define DEBUG true
 #define C0 1
 #define C1 1
@@ -61,6 +63,32 @@ float* cpu_stencil_7pt(const float* matrix_1, unsigned int X1, unsigned int X2, 
 
 __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int X2, unsigned int X3,
                                 float* matrix_ans_d) {
+    __shared__ float A[IN_TILE_DIM][IN_TILE_DIM];
+    // Each thread block will cover the whole X3 plane. This is thread coarsening - each thread is doing
+    // more work than just computing the stencil for 1 element.
+    int j = blockIdx.y * blockDim.y + threadIdx.y - 1;
+    int k = blockIdx.x * blockDim.x + threadIdx.x - 1;
+    for(unsigned int i = 0; i < X3; i++) {
+        float el = 0;  // load ghost element for boundary elements
+        if(j >= 0 && j < X2 && k >= 0 && k < X3) {
+            el = matrix_1_d[i * X1 * X2 + j * X2 + k];
+        }
+        A[j][k] = el;
+        __syncthreads();
+        if(threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM && threadIdx.x >= 1  && threadIdx.x <= OUT_TILE_DIM) {
+            matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x]) 
+                                                     + C1 * (
+                                                        // 4 elements in the plane
+                                                        A[threadIdx.y][threadIdx.x + 1]
+                                                        + A[threadIdx.y][threadIdx.x - 1]
+                                                        + A[threadIdx.y + 1][threadIdx.x]
+                                                        + A[threadIdx.y - 1][threadIdx.x]
+                                                        // TODO: next and prev plane on the register. 
+                                                        // This is register tiling.
+                                                     );
+        }
+        __syncthreads();
+    }
 }
 
 int main() {
@@ -98,8 +126,8 @@ int main() {
     // compute
     clock_t t2 = clock();
     dim3 numThreadsPerBlock(BLOCK_SZ, BLOCK_SZ);  // 1024 is the max allowed value for this
-    int numBlocksPerThread_x = (max(max(X1, X2), X3) + BLOCK_SZ - 1) / BLOCK_SZ;
-    int numBlocksPerThread_y = (max(max(X1, X2), X3) + BLOCK_SZ - 1) / BLOCK_SZ;
+    int numBlocksPerThread_x = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
+    int numBlocksPerThread_y = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
     if(DEBUG) {
         printf("numBlocksPerThread_x=%d, numBlocksPerThread_y=%d\n", numBlocksPerThread_x, numBlocksPerThread_y);
     }
