@@ -68,13 +68,19 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
     // more work than just computing the stencil for 1 element.
     int j = blockIdx.y * blockDim.y + threadIdx.y - 1;
     int k = blockIdx.x * blockDim.x + threadIdx.x - 1;
+
+    float next = 0;
+    float prev = 0;
+    float el = 0;  // load ghost element for boundary elements
+    if(j >= 0 && j < X2 && k >= 0 && k < X3) {
+        el = matrix_1_d[1 * X1 * X2 + j * X2 + k];  // element of the first plane
+    }
+    A[j][k] = el;
+    __syncthreads();
+
     for(unsigned int i = 0; i < X3; i++) {
-        float el = 0;  // load ghost element for boundary elements
-        if(j >= 0 && j < X2 && k >= 0 && k < X3) {
-            el = matrix_1_d[i * X1 * X2 + j * X2 + k];
-        }
-        A[j][k] = el;
-        __syncthreads();
+        // next must be loaded from global memory each time
+        next = i < X3 - 1 ? matrix_1_d[(i + 1) * X1 * X2 + j * X2 + k] : 0;
         if(threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM && threadIdx.x >= 1  && threadIdx.x <= OUT_TILE_DIM) {
             matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x]) 
                                                      + C1 * (
@@ -83,10 +89,14 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
                                                         + A[threadIdx.y][threadIdx.x - 1]
                                                         + A[threadIdx.y + 1][threadIdx.x]
                                                         + A[threadIdx.y - 1][threadIdx.x]
-                                                        // TODO: next and prev plane on the register. 
+                                                        // next and prev plane on the register. 
                                                         // This is register tiling.
+                                                        + next
+                                                        + prev
                                                      );
         }
+        prev = A[threadIdx.y][threadIdx.x];  // no other thread will need this value
+        A[threadIdx.y][threadIdx.x] = next;  // other threads need this value
         __syncthreads();
     }
 }
