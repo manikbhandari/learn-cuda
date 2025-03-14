@@ -66,13 +66,13 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
     __shared__ float A[IN_TILE_DIM][IN_TILE_DIM];
     // Each thread block will cover the whole X3 plane. This is thread coarsening - each thread is doing
     // more work than just computing the stencil for 1 element.
-    int j = blockIdx.y * blockDim.y + threadIdx.y - 1;
-    int k = blockIdx.x * blockDim.x + threadIdx.x - 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
     float next = 0;
     float prev = 0;
     float el = 0;  // load ghost element for boundary elements
-    if(j >= 0 && j < X2 && k >= 0 && k < X3) {
+    if(j > 0 && j < X2 && k > 0 && k < X3) {
         el = matrix_1_d[1 * X1 * X2 + j * X2 + k];  // element of the first plane
     }
     A[j][k] = el;
@@ -136,13 +136,13 @@ int main() {
     // compute
     clock_t t2 = clock();
     dim3 numThreadsPerBlock(BLOCK_SZ, BLOCK_SZ);  // 1024 is the max allowed value for this
-    int numBlocksPerThread_x = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
-    int numBlocksPerThread_y = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
+    int numBlocks_x = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
+    int numBlocks_y = (max(max(X1, X2), X3) + OUT_TILE_DIM - 1) / OUT_TILE_DIM;
     if(DEBUG) {
-        printf("numBlocksPerThread_x=%d, numBlocksPerThread_y=%d\n", numBlocksPerThread_x, numBlocksPerThread_y);
+        printf("numBlocks_x=%d, numBlocks_y=%d\n", numBlocks_x, numBlocks_y);
     }
-    dim3 numBlocksPerThread(numBlocksPerThread_x, numBlocksPerThread_y);
-    gpu_stencil_7pt <<< numBlocksPerThread, numThreadsPerBlock >>> (matrix_1_d, X1, X2, X3, matrix_ans_d);
+    dim3 numBlocks(numBlocks_x, numBlocks_y);
+    gpu_stencil_7pt <<< numBlocks, numThreadsPerBlock >>> (matrix_1_d, X1, X2, X3, matrix_ans_d);
     cudaDeviceSynchronize();
 
     // copy result to host
