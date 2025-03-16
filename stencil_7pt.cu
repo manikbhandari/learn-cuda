@@ -66,14 +66,20 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
     __shared__ float A[IN_TILE_DIM][IN_TILE_DIM];
     // Each thread block will cover the whole X3 plane. This is thread coarsening - each thread is doing
     // more work than just computing the stencil for 1 element.
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y - 1;
+    int k = blockIdx.x * blockDim.x + threadIdx.x - 1;
 
     float next = 0;
     float prev = 0;
+    // threads at the boundary of shared memory load 0
     float el = 0;  // load ghost element for boundary elements
-    if(j > 0 && j < X2 && k > 0 && k < X3) {
-        el = matrix_1_d[1 * X1 * X2 + j * X2 + k];  // element of the first plane
+    if(j >= 0 && j < X2 
+       && k >= 0 && k < X3
+       // interior threads load from global memory
+       && threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM
+       && threadIdx.x >= 1 && threadIdx.x <= OUT_TILE_DIM
+    ) {
+        el = matrix_1_d[j * X2 + k];  // element of the first plane
     }
     A[j][k] = el;
     __syncthreads();
@@ -81,19 +87,20 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
     for(unsigned int i = 0; i < X3; i++) {
         // next must be loaded from global memory each time
         next = i < X3 - 1 ? matrix_1_d[(i + 1) * X1 * X2 + j * X2 + k] : 0;
+        // only interior threads perofrm computation
         if(threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM && threadIdx.x >= 1  && threadIdx.x <= OUT_TILE_DIM) {
-            matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x]) 
-                                                     + C1 * (
-                                                        // 4 elements in the plane
-                                                        A[threadIdx.y][threadIdx.x + 1]
-                                                        + A[threadIdx.y][threadIdx.x - 1]
-                                                        + A[threadIdx.y + 1][threadIdx.x]
-                                                        + A[threadIdx.y - 1][threadIdx.x]
-                                                        // next and prev plane on the register. 
-                                                        // This is register tiling.
-                                                        + next
-                                                        + prev
-                                                     );
+            matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x]);
+                                                    //  + C1 * (
+                                                    //     // 4 elements in the plane
+                                                    //     A[threadIdx.y][threadIdx.x + 1]
+                                                    //     + A[threadIdx.y][threadIdx.x - 1]
+                                                    //     + A[threadIdx.y + 1][threadIdx.x]
+                                                    //     + A[threadIdx.y - 1][threadIdx.x]
+                                                    //     // next and prev plane on the register. 
+                                                    //     // This is register tiling.
+                                                    //     + next
+                                                    //     + prev
+                                                    //  );
         }
         prev = A[threadIdx.y][threadIdx.x];  // no other thread will need this value
         A[threadIdx.y][threadIdx.x] = next;  // other threads need this value
@@ -170,8 +177,8 @@ int main() {
                 float gpu_ans = gpu_matrix_ans[i * X3 + j*X2 + k];
                 if (fabs(cpu_ans - gpu_ans) >= eps) {
                     printf("At position (%d, %d) matrix_ans has %f but gpu_matrix_ans has %f\n", i, j, cpu_ans, gpu_ans);
-                    printf("Fatal error. Returning early.\n");
-                    return 0;
+                    // printf("Fatal error. Returning early.\n");
+                    // return 0;
                 }
             }
         }
