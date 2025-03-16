@@ -6,10 +6,10 @@
 #include <stdio.h>
 #include <time.h>
 
-#define BLOCK_SZ 32
+#define BLOCK_SZ 16
 #define IN_TILE_DIM BLOCK_SZ
 #define OUT_TILE_DIM (IN_TILE_DIM - 2)
-#define DEBUG true
+#define DEBUG false
 #define C0 1
 #define C1 1
 
@@ -19,8 +19,8 @@ const float* getRandomMatrix(unsigned int X1, unsigned int X2, unsigned int X3) 
     unsigned int numElements = X1 * X2 * X3;
     float* matrix = new float[numElements];
     for(unsigned int i = 0; i < numElements; i++) {
-        // matrix[i] = rand() / (float)RAND_MAX;
-        matrix[i] = 1.0;
+        matrix[i] = rand() / (float)RAND_MAX;
+        // matrix[i] = 1.0;
     }
     return (const float*)matrix;
 }
@@ -48,12 +48,12 @@ float* cpu_stencil_7pt(const float* matrix_1, unsigned int X1, unsigned int X2, 
             for (unsigned int k = 0; k < X1; k++) {
                 ans[i * X1 * X2 + j * X2 + k] = C0 * matrix_1[i * X1 * X2 + j * X2 + k] 
                                            + C1 * (
-                                                (k == X1 - 1 ? 0 : matrix_1[i * X1 * X2 + j * X2 + k + 1])
-                                                + (k == 0 ? 0 : matrix_1[i * X1 * X2 + j * X2 + k - 1])
-                                                + (j == X2 - 1 ? 0 : matrix_1[i * X1 * X2 + (j + 1) * X2 + k])
-                                                + (j == 0 ? 0 : matrix_1[i * X1 * X2 + (j - 1) * X2 + k])
-                                                + (i == X3 - 1 ? 0 : matrix_1[(i + 1) * X1 * X2 + j * X2 + k])
-                                                + (i == 0 ? 0 : matrix_1[(i - 1) * X1 * X2 + j * X2 + k])
+                                                (k >= X1 - 1 ? 0 : matrix_1[i * X1 * X2 + j * X2 + k + 1])
+                                                + (k <= 0 ? 0 : matrix_1[i * X1 * X2 + j * X2 + k - 1])
+                                                + (j >= X2 - 1 ? 0 : matrix_1[i * X1 * X2 + (j + 1) * X2 + k])
+                                                + (j <= 0 ? 0 : matrix_1[i * X1 * X2 + (j - 1) * X2 + k])
+                                                + (i >= X3 - 1 ? 0 : matrix_1[(i + 1) * X1 * X2 + j * X2 + k])
+                                                + (i <= 0 ? 0 : matrix_1[(i - 1) * X1 * X2 + j * X2 + k])
                                             );
             }
         }
@@ -66,42 +66,46 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
     __shared__ float A[IN_TILE_DIM][IN_TILE_DIM];
     // Each thread block will cover the whole X3 plane. This is thread coarsening - each thread is doing
     // more work than just computing the stencil for 1 element.
-    int j = blockIdx.y * blockDim.y + threadIdx.y - 1;
-    int k = blockIdx.x * blockDim.x + threadIdx.x - 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y - 1 - blockIdx.y *(BLOCK_SZ - OUT_TILE_DIM);
+    int k = blockIdx.x * blockDim.x + threadIdx.x - 1 - blockIdx.x *(BLOCK_SZ - OUT_TILE_DIM);
 
     float next = 0;
     float prev = 0;
     // threads at the boundary of shared memory load 0
     float el = 0;  // load ghost element for boundary elements
     if(j >= 0 && j < X2 
-       && k >= 0 && k < X3
-       // interior threads load from global memory
-       && threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM
-       && threadIdx.x >= 1 && threadIdx.x <= OUT_TILE_DIM
+       && k >= 0 && k < X1
     ) {
         el = matrix_1_d[j * X2 + k];  // element of the first plane
     }
-    A[j][k] = el;
+    A[threadIdx.y][threadIdx.x] = el;
     __syncthreads();
 
     for(unsigned int i = 0; i < X3; i++) {
         // next must be loaded from global memory each time
-        next = i < X3 - 1 ? matrix_1_d[(i + 1) * X1 * X2 + j * X2 + k] : 0;
+        next = (i < X3 - 1) 
+                && (j >= 0 && j < X2) 
+                && (k >= 0 && k < X1) ? matrix_1_d[(i + 1) * X1 * X2 + j * X2 + k] : 0;
         // only interior threads perofrm computation
-        if(threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM && threadIdx.x >= 1  && threadIdx.x <= OUT_TILE_DIM) {
-            matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x]);
-                                                    //  + C1 * (
-                                                    //     // 4 elements in the plane
-                                                    //     A[threadIdx.y][threadIdx.x + 1]
-                                                    //     + A[threadIdx.y][threadIdx.x - 1]
-                                                    //     + A[threadIdx.y + 1][threadIdx.x]
-                                                    //     + A[threadIdx.y - 1][threadIdx.x]
-                                                    //     // next and prev plane on the register. 
-                                                    //     // This is register tiling.
-                                                    //     + next
-                                                    //     + prev
-                                                    //  );
+        if(threadIdx.y >= 1 && threadIdx.y <= OUT_TILE_DIM 
+            && threadIdx.x >= 1  && threadIdx.x <= OUT_TILE_DIM
+            && (j >= 0 && j < X2) 
+            && (k >= 0 && k < X1)
+        ) {
+            matrix_ans_d[i * X1 * X2 + j * X2 + k] = C0 * (A[threadIdx.y][threadIdx.x])
+                                                     + C1 * (
+                                                        // 4 elements in the plane
+                                                        A[threadIdx.y][threadIdx.x + 1]
+                                                        + A[threadIdx.y][threadIdx.x - 1]
+                                                        + A[threadIdx.y + 1][threadIdx.x]
+                                                        + A[threadIdx.y - 1][threadIdx.x]
+                                                        // next and prev plane on the register. 
+                                                        // This is register tiling.
+                                                        + next
+                                                        + prev
+                                                     );
         }
+        __syncthreads();
         prev = A[threadIdx.y][threadIdx.x];  // no other thread will need this value
         A[threadIdx.y][threadIdx.x] = next;  // other threads need this value
         __syncthreads();
@@ -109,9 +113,10 @@ __global__ void gpu_stencil_7pt(float* matrix_1_d, unsigned int X1, unsigned int
 }
 
 int main() {
-    unsigned int X1 = DEBUG ? 3 : 1024;
-    unsigned int X2 = DEBUG ? 3: 1024;
-    unsigned int X3 = DEBUG ? 3: 1024;
+    unsigned int X1 = DEBUG ? 5 : 512;
+    unsigned int X2 = DEBUG ? 5: 512;
+    unsigned int X3 = DEBUG ? 5: 512;
+    printf("X1=%d X2=%d X3=%d\n", X1, X2, X3);
     const float* matrix_1 = getRandomMatrix(X1, X2, X3);
 
     if(DEBUG) {
@@ -168,17 +173,22 @@ int main() {
     float gpu_overall_time = ((double)(t_gpu_overall_en - t_gpu_overall_st)) / CLOCKS_PER_SEC;
     printf("Overall GPU stencil took %fs\n", gpu_overall_time);
 
+    if(DEBUG) {
+        cout << "Matrix GPU:" << endl;
+        printMatrix(gpu_matrix_ans, X1, X2, X3);
+    }
+
     // Check correctness
     float eps = 1e-2;
-    for(int i = 0; i < X3; i++) {
-        for(int j = 0; j < X2; j++) {
-            for(int k = 0; k < X1; k++) {
-                float cpu_ans = matrix_ans[i * X3 + j*X2 + k];
-                float gpu_ans = gpu_matrix_ans[i * X3 + j*X2 + k];
+    for(unsigned int i = 0; i < X3; i++) {
+        for(unsigned j = 0; j < X2; j++) {
+            for(unsigned int k = 0; k < X1; k++) {
+                float cpu_ans = matrix_ans[i * X1 * X2 + j * X2 + k];
+                float gpu_ans = gpu_matrix_ans[i * X1 * X2 + j * X2 + k];
                 if (fabs(cpu_ans - gpu_ans) >= eps) {
-                    printf("At position (%d, %d) matrix_ans has %f but gpu_matrix_ans has %f\n", i, j, cpu_ans, gpu_ans);
-                    // printf("Fatal error. Returning early.\n");
-                    // return 0;
+                    printf("At position (%d, %d, %d) matrix_ans has %f but gpu_matrix_ans has %f\n", i, j, k, cpu_ans, gpu_ans);
+                    printf("Fatal error. Returning early.\n");
+                    return 0;
                 }
             }
         }
