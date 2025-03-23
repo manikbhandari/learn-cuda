@@ -8,7 +8,7 @@
             "name": "CUDA C++: Launch",
             "type": "cuda-gdb",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/stencil_7pt"
+            "program": "${workspaceFolder}/bin/reduction"
         },
         {
             "name": "CUDA C++: Attach",
