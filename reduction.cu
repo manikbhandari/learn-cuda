@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <time.h>
 
-#define BLOCK_SZ 16
-#define DEBUG false
+#define BLOCK_SZ 4
+#define TILE (2 * BLOCK_SZ)
+#define DEBUG true
 
 using namespace std;
 
@@ -49,12 +50,37 @@ float *cpu_reduction(const float *vec, unsigned int X1)
 
 __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
 {
-    output[0] = 0.0;
+    for (int level = 0; level < (X1 + TILE - 1) / TILE; level++)
+    {
+        int i = 2 * blockIdx.x * BLOCK_SZ + threadIdx.x;
+        if (i < X1)
+        {
+            float s1 = vec[i];
+
+            float s2 = 0.0;
+            int j = i + BLOCK_SZ;
+            if (j < X1)
+                s2 = vec[j];
+            __syncthreads();
+            int out = blockIdx.x * BLOCK_SZ + threadIdx.x;
+            vec[out] = s1 + s2;
+        }
+        __syncthreads();
+    }
+    if (blockIdx.x == 0)
+    {
+        float finalSum = 0.0;
+        for (int i = 0; i < min(X1, BLOCK_SZ); i++)
+        {
+            finalSum += vec[i];
+        }
+        output[0] = finalSum;
+    }
 }
 
 int main()
 {
-    unsigned int X1 = DEBUG ? 5 : 512;
+    unsigned int X1 = DEBUG ? 32 : 128;
     printf("X1=%d \n", X1);
     const float *vec = getRandomMatrix(X1);
 
@@ -62,6 +88,7 @@ int main()
     {
         cout << "Matrix 1:" << endl;
         printMatrix(vec, X1);
+        cout << endl;
     }
     clock_t t0 = clock();
     float *cpu_ans = cpu_reduction(vec, X1);
@@ -88,7 +115,7 @@ int main()
     // compute
     clock_t t2 = clock();
     dim3 numThreadsPerBlock(BLOCK_SZ); // 1024 is the max allowed value for this
-    int nBlocks = (X1 + BLOCK_SZ - 1) / BLOCK_SZ;
+    int nBlocks = (X1 + TILE - 1) / TILE;
     if (DEBUG)
     {
         printf("numBlocks=%d\n", nBlocks);
