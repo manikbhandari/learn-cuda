@@ -52,6 +52,7 @@ __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
 {
     for (int level = 0; level < (X1 + TILE - 1) / TILE; level++)
     {
+        // TODO: Use level inside to prevent useless operations
         int i = 2 * blockIdx.x * BLOCK_SZ + threadIdx.x;
         if (i < X1)
         {
@@ -62,12 +63,11 @@ __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
             if (j < X1)
                 s2 = vec[j];
             __syncthreads();
-            int out = blockIdx.x * BLOCK_SZ + threadIdx.x;
-            vec[out] = s1 + s2;
+            vec[i] = s1 + s2;
         }
         __syncthreads();
     }
-    if (blockIdx.x == 0)
+    if (blockIdx.x == 0)  // TODO: cannot sync across blocks. Use atomicAdd
     {
         float finalSum = 0.0;
         for (int i = 0; i < min(X1, BLOCK_SZ); i++)
