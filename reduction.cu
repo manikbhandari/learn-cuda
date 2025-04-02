@@ -6,9 +6,8 @@
 #include <stdio.h>
 #include <time.h>
 
-#define BLOCK_SZ 4
-#define TILE (2 * BLOCK_SZ)
-#define DEBUG true
+#define BLOCK_SZ 32
+#define DEBUG false
 
 using namespace std;
 
@@ -50,37 +49,29 @@ float *cpu_reduction(const float *vec, unsigned int X1)
 
 __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
 {
-    for (int level = 0; level < (X1 + TILE - 1) / TILE; level++)
-    {
-        // TODO: Use level inside to prevent useless operations
-        int i = 2 * blockIdx.x * BLOCK_SZ + threadIdx.x;
-        if (i < X1)
-        {
-            float s1 = vec[i];
+    __shared__ float vec_s[BLOCK_SZ];
+    int t = threadIdx.x;
+    int i = blockIdx.x * BLOCK_SZ + t;
+    vec_s[t] = 0;
+    if(i < X1)
+        vec_s[t] = vec[i];
+    __syncthreads();
 
-            float s2 = 0.0;
-            int j = i + BLOCK_SZ;
-            if (j < X1)
-                s2 = vec[j];
-            __syncthreads();
-            vec[i] = s1 + s2;
-        }
+    // TODO: this requires block_sz to be a power of 2
+    for (int stride = BLOCK_SZ / 2; stride >= 1; stride /= 2)
+    {
+        if (t < stride)
+            vec_s[t] = vec_s[t] + vec_s[t + stride];
         __syncthreads();
     }
-    if (blockIdx.x == 0)  // TODO: cannot sync across blocks. Use atomicAdd
-    {
-        float finalSum = 0.0;
-        for (int i = 0; i < min(X1, BLOCK_SZ); i++)
-        {
-            finalSum += vec[i];
-        }
-        output[0] = finalSum;
-    }
+
+    if (t == 0)
+        atomicAdd(output, vec_s[0]);
 }
 
 int main()
 {
-    unsigned int X1 = DEBUG ? 32 : 128;
+    unsigned int X1 = DEBUG ? 32 : 512;
     printf("X1=%d \n", X1);
     const float *vec = getRandomMatrix(X1);
 
@@ -115,7 +106,7 @@ int main()
     // compute
     clock_t t2 = clock();
     dim3 numThreadsPerBlock(BLOCK_SZ); // 1024 is the max allowed value for this
-    int nBlocks = (X1 + TILE - 1) / TILE;
+    int nBlocks = (X1 + BLOCK_SZ - 1) / BLOCK_SZ;
     if (DEBUG)
     {
         printf("numBlocks=%d\n", nBlocks);
@@ -126,6 +117,7 @@ int main()
 
     // copy result to host
     float *gpu_ans = new float[1];
+    gpu_ans[0] = 0;
     cudaMemcpy(gpu_ans, ans_d, sizeof(float), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     clock_t t3 = clock();
