@@ -6,7 +6,8 @@
 #include <stdio.h>
 #include <time.h>
 
-#define BLOCK_SZ 32
+#define BLOCK_SZ 512
+#define TILE_SZ 4
 #define DEBUG false
 
 using namespace std;
@@ -51,11 +52,16 @@ __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
 {
     __shared__ float vec_s[BLOCK_SZ];
     int t = threadIdx.x;
-    int i = blockIdx.x * BLOCK_SZ + t;
+    int i = blockIdx.x * BLOCK_SZ * TILE_SZ + t;
     vec_s[t] = 0;
     if(i < X1)
-        vec_s[t] = vec[i];
-    __syncthreads();
+    {
+        for(int tile = 0; tile < TILE_SZ; tile++)
+        {
+            vec_s[t] += vec[i + tile*BLOCK_SZ];
+        }
+        __syncthreads();
+    }
 
     // TODO: this requires block_sz to be a power of 2
     for (int stride = BLOCK_SZ / 2; stride >= 1; stride /= 2)
@@ -71,7 +77,7 @@ __global__ void gpu_reduction(float *vec, unsigned int X1, float *output)
 
 int main()
 {
-    unsigned int X1 = DEBUG ? 32 : 512;
+    unsigned int X1 = DEBUG ? 32 : 1 << 13;
     printf("X1=%d \n", X1);
     const float *vec = getRandomMatrix(X1);
 
@@ -106,7 +112,7 @@ int main()
     // compute
     clock_t t2 = clock();
     dim3 numThreadsPerBlock(BLOCK_SZ); // 1024 is the max allowed value for this
-    int nBlocks = (X1 + BLOCK_SZ - 1) / BLOCK_SZ;
+    int nBlocks = (X1 + BLOCK_SZ*TILE_SZ - 1) / (BLOCK_SZ * TILE_SZ);
     if (DEBUG)
     {
         printf("numBlocks=%d\n", nBlocks);
